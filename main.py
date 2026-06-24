@@ -1,4 +1,4 @@
-import os, json, logging, asyncio
+import os, json, logging
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from groq import Groq
@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
 GROQ_API_KEY     = os.getenv("GROQ_API_KEY")
 APPS_SCRIPT_URL  = os.getenv("APPS_SCRIPT_URL")
 MANAGER_CHAT_IDS = [int(x) for x in os.getenv("MANAGER_CHAT_IDS", "").split(",") if x.strip()]
@@ -63,27 +63,29 @@ def _next_id():
 async def _notify_managers(message, context):
     for mgr_id in MANAGER_CHAT_IDS:
         try:
-            await context.bot.send_message(chat_id=mgr_id, text=f"[Claims Bot]\n{message}")
+            await context.bot.send_message(chat_id=mgr_id, text="[Claims Bot]\n" + message)
         except Exception as e:
             log.warning("Could not notify manager %s: %s", mgr_id, e)
 
 async def execute_tool(name, args, context):
     if name == "submit_claim":
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-        claim_id = f"CLM-{datetime.now().strftime('%Y%m%d')}-{_next_id()}"
+        claim_id = "CLM-" + datetime.now().strftime("%Y%m%d") + "-" + _next_id()
         result = add_claim({**args, "claimId": claim_id, "timestamp": now, "status": "Pending"})
         if result.get("success"):
             await _notify_managers(
-                f"New claim!\nID: {claim_id}\nBy: {args['employee_name']} ({args['employee_id']})\n"
-                f"Amount: {CURRENCY} {float(args['amount']):.2f}\nCategory: {args['category']} - {args['merchant']}\n"
-                f"Dept: {args['department']}", context)
+                "New claim!\nID: " + claim_id + "\nBy: " + args["employee_name"] + " (" + args["employee_id"] + ")\n"
+                + "Amount: " + CURRENCY + " " + str(float(args["amount"])) + "\nCategory: " + args["category"] + " - " + args["merchant"]
+                + "\nDept: " + args["department"], context)
             return json.dumps({"success": True, "claim_id": claim_id})
         return json.dumps(result)
     elif name == "check_claim_status":
         claims = get_all_claims()
-        if cid := args.get("claim_id"):
+        cid = args.get("claim_id")
+        eid = args.get("employee_id")
+        if cid:
             found = [c for c in claims if c.get("claimId","").upper() == cid.upper()]
-        elif eid := args.get("employee_id"):
+        elif eid:
             found = [c for c in claims if c.get("employeeId","").upper() == eid.upper()]
         else:
             return json.dumps({"error": "Provide claim_id or employee_id"})
@@ -91,26 +93,21 @@ async def execute_tool(name, args, context):
     elif name == "approve_claim":
         result = update_claim_status(args["claim_id"], "Approved", args["approver"], args.get("remarks",""))
         if result.get("success"):
-            await _notify_managers(f"Claim {args['claim_id']} APPROVED by {args['approver']}.", context)
+            await _notify_managers("Claim " + args["claim_id"] + " APPROVED by " + args["approver"] + ".", context)
         return json.dumps(result)
     elif name == "reject_claim":
         result = update_claim_status(args["claim_id"], "Rejected", args["approver"], args.get("reason",""))
         if result.get("success"):
-            await _notify_managers(f"Claim {args['claim_id']} REJECTED by {args['approver']}.\nReason: {args.get('reason','')}", context)
+            await _notify_managers("Claim " + args["claim_id"] + " REJECTED by " + args["approver"] + ".\nReason: " + args.get("reason",""), context)
         return json.dumps(result)
     elif name == "get_pending_claims":
         pending = [c for c in get_all_claims() if c.get("status","").lower() == "pending"]
         return json.dumps({"pending_count": len(pending), "claims": pending[:15]})
     elif name == "get_summary":
         return json.dumps(_call_apps_script("getSummary", {}))
-    return json.dumps({"error": f"Unknown tool: {name}"})
+    return json.dumps({"error": "Unknown tool: " + name})
 
-SYSTEM_PROMPT = f"""You are a smart, friendly company expense claims assistant.
-Help employees submit claims and managers approve/reject them.
-When submitting, collect: employee name, employee ID, date, amount ({CURRENCY}), category, merchant, description, department.
-For approvals/rejections, confirm the user is a manager.
-Be concise. Format amounts as {CURRENCY} X,XXX.XX.
-Today: {datetime.now().strftime('%d %B %Y')}"""
+SYSTEM_PROMPT = "You are a friendly company expense claims assistant. Help employees submit claims and managers approve/reject them. When submitting, collect: employee name, employee ID, date, amount (" + CURRENCY + "), category, merchant, description, department. For approvals, confirm the user is a manager. Be concise. Format amounts as " + CURRENCY + " X,XXX.XX. Today: " + datetime.now().strftime("%d %B %Y")
 
 async def run_agent(user_id, user_message, context):
     history = user_sessions.setdefault(user_id, [])
@@ -128,14 +125,15 @@ async def run_agent(user_id, user_message, context):
         messages.append({"role": "assistant", "content": msg.content, "tool_calls": msg.tool_calls})
         for tc in msg.tool_calls:
             args = json.loads(tc.function.arguments)
+            log.info("Tool: %s", tc.function.name)
             result = await execute_tool(tc.function.name, args, context)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
 async def cmd_start(update, context):
     uid = update.effective_user.id
-    log.info("User %s started bot (chat_id: %s)", update.effective_user.first_name, uid)
+    log.info("User %s started bot, chat_id: %s", update.effective_user.first_name, uid)
     await update.message.reply_text(
-        f"Hi {update.effective_user.first_name}! I am your Claims Assistant (Groq AI).\n\n"
+        "Hi " + update.effective_user.first_name + "! I am your Claims Assistant (Groq AI).\n\n"
         "/submit - Submit a new expense claim\n"
         "/status - Check your claim status\n"
         "/pending - View pending approvals (managers)\n"
@@ -146,7 +144,7 @@ async def cmd_start(update, context):
         "Or just chat naturally!")
 
 async def cmd_submit(update, context):
-    await update.message.reply_text("Tell me the claim details: your name + employee ID, date, amount, category, merchant, description, department.")
+    await update.message.reply_text("Tell me: your name + employee ID, date, amount, category, merchant, description, department.")
 
 async def cmd_status(update, context):
     reply = await run_agent(update.effective_user.id, "Show my recent claims. Ask me for my employee ID.", context)
@@ -159,7 +157,7 @@ async def cmd_pending(update, context):
 async def cmd_approve(update, context):
     if context.args:
         reply = await run_agent(update.effective_user.id,
-            f"Approve claim {context.args[0].upper()}. My name is {update.effective_user.full_name}.", context)
+            "Approve claim " + context.args[0].upper() + ". My name is " + update.effective_user.full_name + ".", context)
     else:
         reply = "Usage: /approve CLM-20260623-001"
     await update.message.reply_text(reply)
@@ -168,7 +166,7 @@ async def cmd_reject(update, context):
     if len(context.args) >= 2:
         reason = " ".join(context.args[1:])
         reply = await run_agent(update.effective_user.id,
-            f"Reject claim {context.args[0].upper()} because: {reason}. My name is {update.effective_user.full_name}.", context)
+            "Reject claim " + context.args[0].upper() + " because: " + reason + ". My name is " + update.effective_user.full_name + ".", context)
     else:
         reply = "Usage: /reject CLM-20260623-001 [reason]"
     await update.message.reply_text(reply)
@@ -192,7 +190,7 @@ async def handle_message(update, context):
         reply = await run_agent(uid, update.message.text, context)
     except Exception as e:
         log.exception("Agent error")
-        reply = "Something went wrong. Try again or /clear to reset."
+        reply = "Something went wrong. Try /clear to reset."
     for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
         await update.message.reply_text(chunk)
 
