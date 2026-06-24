@@ -1,215 +1,164 @@
-import os, json, logging
+import os, json, logging, time
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from groq import Groq
-from telegram import Update
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
-    ContextTypes, filters
-)
-import requests
+import httpx
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 log = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
-GROQ_API_KEY     = os.getenv("GROQ_API_KEY")
-APPS_SCRIPT_URL  = os.getenv("APPS_SCRIPT_URL")
-MANAGER_CHAT_IDS = [int(x) for x in os.getenv("MANAGER_CHAT_IDS", "").split(",") if x.strip()]
-CURRENCY         = os.getenv("CURRENCY", "MYR")
-GROQ_MODEL       = "llama-3.3-70b-versatile"
+TOKEN           = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
+GROQ_API_KEY    = os.getenv("GROQ_API_KEY")
+APPS_SCRIPT_URL = os.getenv("APPS_SCRIPT_URL")
+MANAGER_IDS     = [int(x) for x in os.getenv("MANAGER_CHAT_IDS","").split(",") if x.strip()]
+CURRENCY        = os.getenv("CURRENCY","MYR")
+MODEL           = "llama-3.3-70b-versatile"
 
-groq_client = Groq(api_key=GROQ_API_KEY)
-user_sessions = {}
+BASE = f"https://api.telegram.org/bot{TOKEN}"
+groq = Groq(api_key=GROQ_API_KEY)
+sessions = {}
+_id = 0
 
-def _call_apps_script(action, payload):
+def tg(method, **kwargs):
+    r = httpx.post(f"{BASE}/{method}", json=kwargs, timeout=30)
+    return r.json()
+
+def send(chat_id, text):
+    for chunk in [text[i:i+4000] for i in range(0,len(text),4000)]:
+        tg("sendMessage", chat_id=chat_id, text=chunk)
+
+def notify_managers(text):
+    for mid in MANAGER_IDS:
+        try: tg("sendMessage", chat_id=mid, text=f"[Claims Bot]\n{text}")
+        except: pass
+
+def apps(action, payload={}):
     try:
-        resp = requests.post(APPS_SCRIPT_URL, json={"action": action, **payload}, timeout=15)
-        resp.raise_for_status()
-        return resp.json()
+        r = httpx.post(APPS_SCRIPT_URL, json={"action":action,**payload}, timeout=15)
+        return r.json()
     except Exception as e:
-        log.error("Apps Script error: %s", e)
-        return {"success": False, "error": str(e)}
-
-def get_all_claims():
-    return _call_apps_script("getClaims", {}).get("claims", [])
-
-def add_claim(data):
-    return _call_apps_script("addClaim", {"claim": data})
-
-def update_claim_status(claim_id, status, approver, remarks=""):
-    return _call_apps_script("updateStatus", {
-        "claimId": claim_id, "status": status,
-        "approver": approver, "remarks": remarks
-    })
+        return {"success":False,"error":str(e)}
 
 TOOLS = [
-    {"type":"function","function":{"name":"submit_claim","description":"Submit a new expense claim.","parameters":{"type":"object","properties":{"employee_name":{"type":"string"},"employee_id":{"type":"string"},"date":{"type":"string"},"amount":{"type":"number"},"category":{"type":"string","enum":["Meals","Transport","Accommodation","Office Supplies","Travel","Entertainment","Utilities","Others"]},"merchant":{"type":"string"},"description":{"type":"string"},"department":{"type":"string"}},"required":["employee_name","employee_id","date","amount","category","merchant","description","department"]}}},
-    {"type":"function","function":{"name":"check_claim_status","description":"Check claim status.","parameters":{"type":"object","properties":{"claim_id":{"type":"string"},"employee_id":{"type":"string"}}}}},
-    {"type":"function","function":{"name":"approve_claim","description":"Approve a pending claim.","parameters":{"type":"object","properties":{"claim_id":{"type":"string"},"approver":{"type":"string"},"remarks":{"type":"string"}},"required":["claim_id","approver"]}}},
-    {"type":"function","function":{"name":"reject_claim","description":"Reject a claim with reason.","parameters":{"type":"object","properties":{"claim_id":{"type":"string"},"approver":{"type":"string"},"reason":{"type":"string"}},"required":["claim_id","approver","reason"]}}},
-    {"type":"function","function":{"name":"get_pending_claims","description":"List all pending claims.","parameters":{"type":"object","properties":{}}}},
-    {"type":"function","function":{"name":"get_summary","description":"Get claims summary stats.","parameters":{"type":"object","properties":{}}}},
+    {"type":"function","function":{"name":"submit_claim","description":"Submit expense claim","parameters":{"type":"object","properties":{"employee_name":{"type":"string"},"employee_id":{"type":"string"},"date":{"type":"string"},"amount":{"type":"number"},"category":{"type":"string","enum":["Meals","Transport","Accommodation","Office Supplies","Travel","Entertainment","Utilities","Others"]},"merchant":{"type":"string"},"description":{"type":"string"},"department":{"type":"string"}},"required":["employee_name","employee_id","date","amount","category","merchant","description","department"]}}},
+    {"type":"function","function":{"name":"check_status","description":"Check claim status","parameters":{"type":"object","properties":{"claim_id":{"type":"string"},"employee_id":{"type":"string"}}}}},
+    {"type":"function","function":{"name":"approve_claim","description":"Approve a claim","parameters":{"type":"object","properties":{"claim_id":{"type":"string"},"approver":{"type":"string"},"remarks":{"type":"string"}},"required":["claim_id","approver"]}}},
+    {"type":"function","function":{"name":"reject_claim","description":"Reject a claim","parameters":{"type":"object","properties":{"claim_id":{"type":"string"},"approver":{"type":"string"},"reason":{"type":"string"}},"required":["claim_id","approver","reason"]}}},
+    {"type":"function","function":{"name":"get_pending","description":"Get pending claims","parameters":{"type":"object","properties":{}}}},
+    {"type":"function","function":{"name":"get_summary","description":"Get summary stats","parameters":{"type":"object","properties":{}}}},
 ]
 
-_id_counter = 0
-def _next_id():
-    global _id_counter
-    _id_counter += 1
-    return str(_id_counter).zfill(3)
-
-async def _notify_managers(message, context):
-    for mgr_id in MANAGER_CHAT_IDS:
-        try:
-            await context.bot.send_message(chat_id=mgr_id, text=f"[Claims Bot]\n{message}")
-        except Exception as e:
-            log.warning("Could not notify manager %s: %s", mgr_id, e)
-
-async def execute_tool(name, args, context):
+def run_tool(name, args):
+    global _id
     if name == "submit_claim":
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-        claim_id = f"CLM-{datetime.now().strftime('%Y%m%d')}-{_next_id()}"
-        result = add_claim({**args, "claimId": claim_id, "timestamp": now, "status": "Pending"})
+        _id += 1
+        claim_id = f"CLM-{datetime.now().strftime('%Y%m%d')}-{str(_id).zfill(3)}"
+        result = apps("addClaim", {"claim":{**args,"claimId":claim_id,"status":"Pending"}})
         if result.get("success"):
-            await _notify_managers(
-                f"New claim!\nID: {claim_id}\nBy: {args['employee_name']} ({args['employee_id']})\n"
-                f"Amount: {CURRENCY} {float(args['amount']):.2f}\nCategory: {args['category']} - {args['merchant']}\n"
-                f"Dept: {args['department']}", context)
-            return json.dumps({"success": True, "claim_id": claim_id})
+            notify_managers(f"New claim!\nID: {claim_id}\nBy: {args['employee_name']} ({args['employee_id']})\nAmount: {CURRENCY} {float(args['amount']):.2f}\nCategory: {args['category']} - {args['merchant']}\nDept: {args['department']}")
         return json.dumps(result)
-    elif name == "check_claim_status":
-        claims = get_all_claims()
-        cid = args.get("claim_id")
-        eid = args.get("employee_id")
-        if cid:
-            found = [c for c in claims if c.get("claimId","").upper() == cid.upper()]
-        elif eid:
-            found = [c for c in claims if c.get("employeeId","").upper() == eid.upper()]
-        else:
-            return json.dumps({"error": "Provide claim_id or employee_id"})
-        return json.dumps({"claims": found[:10]})
+    elif name == "check_status":
+        claims = apps("getClaims",{}).get("claims",[])
+        cid = args.get("claim_id",""); eid = args.get("employee_id","")
+        found = [c for c in claims if (cid and c.get("claimId","").upper()==cid.upper()) or (eid and c.get("employeeId","").upper()==eid.upper())]
+        return json.dumps({"claims":found[:10]})
     elif name == "approve_claim":
-        result = update_claim_status(args["claim_id"], "Approved", args["approver"], args.get("remarks",""))
-        if result.get("success"):
-            await _notify_managers(f"Claim {args['claim_id']} APPROVED by {args['approver']}.", context)
+        result = apps("updateStatus",{"claimId":args["claim_id"],"status":"Approved","approver":args["approver"],"remarks":args.get("remarks","")})
+        if result.get("success"): notify_managers(f"Claim {args['claim_id']} APPROVED by {args['approver']}.")
         return json.dumps(result)
     elif name == "reject_claim":
-        result = update_claim_status(args["claim_id"], "Rejected", args["approver"], args.get("reason",""))
-        if result.get("success"):
-            await _notify_managers(f"Claim {args['claim_id']} REJECTED by {args['approver']}.\nReason: {args.get('reason','')}", context)
+        result = apps("updateStatus",{"claimId":args["claim_id"],"status":"Rejected","approver":args["approver"],"remarks":args.get("reason","")})
+        if result.get("success"): notify_managers(f"Claim {args['claim_id']} REJECTED by {args['approver']}.\nReason: {args.get('reason','')}")
         return json.dumps(result)
-    elif name == "get_pending_claims":
-        pending = [c for c in get_all_claims() if c.get("status","").lower() == "pending"]
-        return json.dumps({"pending_count": len(pending), "claims": pending[:15]})
+    elif name == "get_pending":
+        claims = apps("getClaims",{}).get("claims",[])
+        pending = [c for c in claims if c.get("status","").lower()=="pending"]
+        return json.dumps({"count":len(pending),"claims":pending[:15]})
     elif name == "get_summary":
-        return json.dumps(_call_apps_script("getSummary", {}))
-    return json.dumps({"error": f"Unknown tool: {name}"})
+        return json.dumps(apps("getSummary",{}))
+    return json.dumps({"error":f"Unknown: {name}"})
 
-SYSTEM_PROMPT = f"""You are a smart friendly company expense claims assistant.
-Help employees submit claims and managers approve or reject them.
-When submitting collect: employee name, employee ID, date, amount ({CURRENCY}), category, merchant, description, department.
-Be concise. Format amounts as {CURRENCY} X,XXX.XX. Today: {datetime.now().strftime('%d %B %Y')}"""
+SYSTEM = f"""You are a friendly expense claims assistant. Help employees submit claims and managers approve/reject them.
+For submissions collect: employee name, employee ID, date, amount ({CURRENCY}), category, merchant, description, department.
+Be concise. Today: {datetime.now().strftime('%d %B %Y')}"""
 
-async def run_agent(user_id, user_message, context):
-    history = user_sessions.setdefault(user_id, [])
-    history.append({"role": "user", "content": user_message})
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history[-20:]
+def agent(user_id, text):
+    hist = sessions.setdefault(user_id,[])
+    hist.append({"role":"user","content":text})
+    msgs = [{"role":"system","content":SYSTEM}]+hist[-20:]
     for _ in range(5):
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL, messages=messages, tools=TOOLS,
-            tool_choice="auto", max_tokens=1024, temperature=0.3)
-        msg = response.choices[0].message
-        if response.choices[0].finish_reason == "stop" or not msg.tool_calls:
+        resp = groq.chat.completions.create(model=MODEL,messages=msgs,tools=TOOLS,tool_choice="auto",max_tokens=1024,temperature=0.3)
+        msg = resp.choices[0].message
+        if resp.choices[0].finish_reason=="stop" or not msg.tool_calls:
             reply = msg.content or "Done."
-            history.append({"role": "assistant", "content": reply})
+            hist.append({"role":"assistant","content":reply})
             return reply
-        messages.append({"role": "assistant", "content": msg.content, "tool_calls": msg.tool_calls})
+        msgs.append({"role":"assistant","content":msg.content,"tool_calls":msg.tool_calls})
         for tc in msg.tool_calls:
-            args = json.loads(tc.function.arguments)
-            result = await execute_tool(tc.function.name, args, context)
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+            result = run_tool(tc.function.name, json.loads(tc.function.arguments))
+            msgs.append({"role":"tool","tool_call_id":tc.id,"content":result})
     return "Could not complete. Please try again."
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    log.info("User %s started bot (chat_id: %s)", update.effective_user.first_name, uid)
-    await update.message.reply_text(
-        f"Hi {update.effective_user.first_name}! I am your Claims Assistant powered by Groq AI.\n\n"
-        "/submit - Submit a new expense claim\n"
-        "/status - Check your claim status\n"
-        "/pending - View pending approvals\n"
-        "/approve CLM-ID - Approve a claim\n"
-        "/reject CLM-ID reason - Reject a claim\n"
-        "/summary - Monthly summary\n"
-        "/clear - Reset conversation\n\n"
-        "Or just chat naturally! Try: I want to submit a claim")
-
-async def cmd_submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Tell me the details: name, employee ID, date, amount, category, merchant, description, department.")
-
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reply = await run_agent(update.effective_user.id, "Show my recent claims. Ask for my employee ID if needed.", context)
-    await update.message.reply_text(reply)
-
-async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reply = await run_agent(update.effective_user.id, "Show all pending claims needing approval.", context)
-    await update.message.reply_text(reply)
-
-async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.args:
-        reply = await run_agent(update.effective_user.id,
-            f"Approve claim {context.args[0].upper()}. My name is {update.effective_user.full_name}.", context)
+def handle(msg):
+    chat_id = msg["chat"]["id"]
+    user = msg.get("from",{})
+    name = user.get("first_name","there")
+    text = msg.get("text","")
+    log.info("Message from chat_id %s: %s", chat_id, text[:80])
+    if text.startswith("/start"):
+        send(chat_id,
+            f"Hi {name}! I am your Claims Assistant powered by Groq AI.\n\n"
+            "/submit - Submit a new expense claim\n"
+            "/status - Check your claim status\n"
+            "/pending - View pending approvals\n"
+            "/approve CLM-ID - Approve a claim\n"
+            "/reject CLM-ID reason - Reject a claim\n"
+            "/summary - Monthly summary\n"
+            "/clear - Reset conversation\n\n"
+            "Or just chat naturally! Try: I want to submit a claim")
+    elif text.startswith("/submit"):
+        send(chat_id,"Tell me the details: name, employee ID, date, amount, category, merchant, description, department.")
+    elif text.startswith("/status"):
+        send(chat_id, agent(chat_id,"Show my recent claims. Ask for my employee ID if needed."))
+    elif text.startswith("/pending"):
+        send(chat_id, agent(chat_id,"Show all pending claims needing approval."))
+    elif text.startswith("/approve"):
+        parts = text.split()
+        if len(parts)>1:
+            send(chat_id, agent(chat_id,f"Approve claim {parts[1].upper()}. My name is {name}."))
+        else:
+            send(chat_id,"Usage: /approve CLM-20260624-001")
+    elif text.startswith("/reject"):
+        parts = text.split(None,2)
+        if len(parts)>2:
+            send(chat_id, agent(chat_id,f"Reject claim {parts[1].upper()} because: {parts[2]}. My name is {name}."))
+        else:
+            send(chat_id,"Usage: /reject CLM-20260624-001 reason")
+    elif text.startswith("/summary"):
+        send(chat_id, agent(chat_id,"Give full summary: totals, counts by status, approval rate."))
+    elif text.startswith("/clear"):
+        sessions.pop(chat_id,None)
+        send(chat_id,"Conversation cleared!")
     else:
-        reply = "Usage: /approve CLM-20260624-001"
-    await update.message.reply_text(reply)
-
-async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) >= 2:
-        reason = " ".join(context.args[1:])
-        reply = await run_agent(update.effective_user.id,
-            f"Reject claim {context.args[0].upper()} because: {reason}. My name is {update.effective_user.full_name}.", context)
-    else:
-        reply = "Usage: /reject CLM-20260624-001 reason"
-    await update.message.reply_text(reply)
-
-async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reply = await run_agent(update.effective_user.id, "Give full summary: totals, counts by status, approval rate.", context)
-    await update.message.reply_text(reply)
-
-async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_sessions.pop(update.effective_user.id, None)
-    await update.message.reply_text("Conversation cleared!")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    uid = update.effective_user.id
-    log.info("Message from chat_id %s: %s", uid, update.message.text[:80])
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    try:
-        reply = await run_agent(uid, update.message.text, context)
-    except Exception as e:
-        log.exception("Agent error")
-        reply = "Something went wrong. Try again or /clear to reset."
-    for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
-        await update.message.reply_text(chunk)
+        reply = agent(chat_id, text)
+        send(chat_id, reply)
 
 def main():
-    log.info("Starting bot with token ending: ...%s", TELEGRAM_TOKEN[-6:] if TELEGRAM_TOKEN else "NONE")
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start",   cmd_start))
-    app.add_handler(CommandHandler("submit",  cmd_submit))
-    app.add_handler(CommandHandler("status",  cmd_status))
-    app.add_handler(CommandHandler("pending", cmd_pending))
-    app.add_handler(CommandHandler("approve", cmd_approve))
-    app.add_handler(CommandHandler("reject",  cmd_reject))
-    app.add_handler(CommandHandler("summary", cmd_summary))
-    app.add_handler(CommandHandler("clear",   cmd_clear))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    log.info("Bot starting with token: ...%s", TOKEN[-6:] if TOKEN else "NONE")
+    offset = 0
     log.info("Bot polling started!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    while True:
+        try:
+            r = tg("getUpdates", offset=offset, timeout=30, allowed_updates=["message"])
+            for update in r.get("result",[]):
+                offset = update["update_id"]+1
+                if "message" in update:
+                    handle(update["message"])
+        except Exception as e:
+            log.error("Polling error: %s", e)
+            time.sleep(5)
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
