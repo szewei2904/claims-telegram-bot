@@ -1,4 +1,4 @@
-import os, json, logging, asyncio
+import os, json, logging
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 from groq import Groq
@@ -81,9 +81,11 @@ async def execute_tool(name, args, context):
         return json.dumps(result)
     elif name == "check_claim_status":
         claims = get_all_claims()
-        if cid := args.get("claim_id"):
+        cid = args.get("claim_id")
+        eid = args.get("employee_id")
+        if cid:
             found = [c for c in claims if c.get("claimId","").upper() == cid.upper()]
-        elif eid := args.get("employee_id"):
+        elif eid:
             found = [c for c in claims if c.get("employeeId","").upper() == eid.upper()]
         else:
             return json.dumps({"error": "Provide claim_id or employee_id"})
@@ -105,12 +107,10 @@ async def execute_tool(name, args, context):
         return json.dumps(_call_apps_script("getSummary", {}))
     return json.dumps({"error": f"Unknown tool: {name}"})
 
-SYSTEM_PROMPT = f"""You are a smart, friendly company expense claims assistant for Sailfish Swim Academy.
-Help employees submit claims and managers approve/reject them.
-When submitting, collect: employee name, employee ID, date, amount ({CURRENCY}), category, merchant, description, department.
-For approvals/rejections, confirm the user is a manager.
-Be concise. Format amounts as {CURRENCY} X,XXX.XX.
-Today: {datetime.now().strftime('%d %B %Y')}"""
+SYSTEM_PROMPT = f"""You are a smart friendly company expense claims assistant.
+Help employees submit claims and managers approve or reject them.
+When submitting collect: employee name, employee ID, date, amount ({CURRENCY}), category, merchant, description, department.
+Be concise. Format amounts as {CURRENCY} X,XXX.XX. Today: {datetime.now().strftime('%d %B %Y')}"""
 
 async def run_agent(user_id, user_message, context):
     history = user_sessions.setdefault(user_id, [])
@@ -130,34 +130,34 @@ async def run_agent(user_id, user_message, context):
             args = json.loads(tc.function.arguments)
             result = await execute_tool(tc.function.name, args, context)
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
-    return "I couldn't complete that. Please try again."
+    return "Could not complete. Please try again."
 
-async def cmd_start(update, context):
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     log.info("User %s started bot (chat_id: %s)", update.effective_user.first_name, uid)
     await update.message.reply_text(
         f"Hi {update.effective_user.first_name}! I am your Claims Assistant powered by Groq AI.\n\n"
         "/submit - Submit a new expense claim\n"
         "/status - Check your claim status\n"
-        "/pending - View pending approvals (managers)\n"
+        "/pending - View pending approvals\n"
         "/approve CLM-ID - Approve a claim\n"
         "/reject CLM-ID reason - Reject a claim\n"
         "/summary - Monthly summary\n"
         "/clear - Reset conversation\n\n"
-        "Or just chat naturally! Try: \"I want to submit a claim\"")
+        "Or just chat naturally! Try: I want to submit a claim")
 
-async def cmd_submit(update, context):
-    await update.message.reply_text("Sure! Tell me the details: your name, employee ID, date, amount, category, merchant, description and department.")
+async def cmd_submit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Tell me the details: name, employee ID, date, amount, category, merchant, description, department.")
 
-async def cmd_status(update, context):
-    reply = await run_agent(update.effective_user.id, "Show my recent claims status. Ask me for my employee ID if needed.", context)
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply = await run_agent(update.effective_user.id, "Show my recent claims. Ask for my employee ID if needed.", context)
     await update.message.reply_text(reply)
 
-async def cmd_pending(update, context):
+async def cmd_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = await run_agent(update.effective_user.id, "Show all pending claims needing approval.", context)
     await update.message.reply_text(reply)
 
-async def cmd_approve(update, context):
+async def cmd_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         reply = await run_agent(update.effective_user.id,
             f"Approve claim {context.args[0].upper()}. My name is {update.effective_user.full_name}.", context)
@@ -165,25 +165,24 @@ async def cmd_approve(update, context):
         reply = "Usage: /approve CLM-20260624-001"
     await update.message.reply_text(reply)
 
-async def cmd_reject(update, context):
+async def cmd_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) >= 2:
         reason = " ".join(context.args[1:])
         reply = await run_agent(update.effective_user.id,
             f"Reject claim {context.args[0].upper()} because: {reason}. My name is {update.effective_user.full_name}.", context)
     else:
-        reply = "Usage: /reject CLM-20260624-001 [reason]"
+        reply = "Usage: /reject CLM-20260624-001 reason"
     await update.message.reply_text(reply)
 
-async def cmd_summary(update, context):
-    reply = await run_agent(update.effective_user.id,
-        "Give me a full summary: total amounts, counts by status, approval rate.", context)
+async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply = await run_agent(update.effective_user.id, "Give full summary: totals, counts by status, approval rate.", context)
     await update.message.reply_text(reply)
 
-async def cmd_clear(update, context):
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_sessions.pop(update.effective_user.id, None)
-    await update.message.reply_text("Conversation cleared! Start fresh.")
+    await update.message.reply_text("Conversation cleared!")
 
-async def handle_message(update, context):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
     uid = update.effective_user.id
@@ -193,11 +192,12 @@ async def handle_message(update, context):
         reply = await run_agent(uid, update.message.text, context)
     except Exception as e:
         log.exception("Agent error")
-        reply = "Something went wrong. Please try again or /clear to reset."
+        reply = "Something went wrong. Try again or /clear to reset."
     for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
         await update.message.reply_text(chunk)
 
-async def main_async():
+def main():
+    log.info("Starting bot with token ending: ...%s", TELEGRAM_TOKEN[-6:] if TELEGRAM_TOKEN else "NONE")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("submit",  cmd_submit))
@@ -208,17 +208,8 @@ async def main_async():
     app.add_handler(CommandHandler("summary", cmd_summary))
     app.add_handler(CommandHandler("clear",   cmd_clear))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    log.info("Bot running with Groq (%s) — token: ...%s", GROQ_MODEL, TELEGRAM_TOKEN[-6:] if TELEGRAM_TOKEN else "NONE")
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-    log.info("Bot is polling. Press Ctrl+C to stop.")
-    try:
-        await asyncio.Event().wait()
-    finally:
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+    log.info("Bot polling started!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    asyncio.run(main_async())
+    main()
