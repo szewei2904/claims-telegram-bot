@@ -48,7 +48,7 @@ def notify_managers(text):
 
 def apps(action, payload={}):
     try:
-        r = httpx.post(APPS_SCRIPT_URL, json={"action": action, **payload}, timeout=15)
+        r = httpx.post(APPS_SCRIPT_URL, json={"action": action, **payload}, timeout=15, follow_redirects=True)
         return r.json()
     except Exception as e:
         return {"success": False, "error": str(e)}
