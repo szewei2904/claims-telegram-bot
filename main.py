@@ -184,7 +184,10 @@ def handle_text(chat_id, user, text):
         mine = [c for c in claims if tg_name.lower() in c.get("employeeName","").lower()]
         if mine:
             msg = "📋 <b>Your claims:</b>\n\n"
-            for c in mine[-5:]: msg += f"{{'Pending':'⏳','Approved':'✅','Rejected':'❌'}.get(c.get('status',''),'?')} {c.get('claimId','?')} - {CURRENCY} {float(c.get('amount',0)):.2f} - {c.get('status')}\n"
+            STATUS_MAP = {"Pending":"\u23f3","Approved":"\u2705","Rejected":"\u274c"}
+            for c in mine[-5:]:
+                em = STATUS_MAP.get(c.get('status',''),'?')
+                msg += f"{em} {c.get('claimId','?')} - {CURRENCY} {float(c.get('amount',0)):.2f} - {c.get('status')}\n"
             send(chat_id, msg)
         else: send(chat_id, "No claims yet. Send a receipt photo!")
     elif text.startswith("/pending"):
