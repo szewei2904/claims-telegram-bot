@@ -1,5 +1,5 @@
-import os, json, logging, time, uuid, base64
-from datetime import datetime
+import os, json, logging, time, uuid, base64, re
+from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
 from groq import Groq
 import httpx
@@ -14,29 +14,31 @@ APPS_SCRIPT_URL = os.getenv("APPS_SCRIPT_URL")
 MANAGER_IDS   = [int(x) for x in os.getenv("MANAGER_CHAT_IDS","").split(",") if x.strip()]
 CURRENCY      = os.getenv("CURRENCY","MYR")
 VISION_MODEL  = "meta-llama/llama-4-scout-17b-16e-instruct"
-CHAT_MODEL    = "llama-3.3-70b-versatile"
 
 BASE = f"https://api.telegram.org/bot{TOKEN}"
 groq_client = Groq(api_key=GROQ_API_KEY)
-
 pending = {}
-sessions = {}
 submitted_ids = set()
+
+DEPARTMENTS = ["Swimming", "Admin", "Management", "Marketing", "Operations", "Others"]
+CATEGORIES  = ["Meals", "Transport", "Accommodation", "Office Supplies", "Travel", "Entertainment", "Utilities", "Others"]
+MONTHS = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,"january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
 
 def tg(method, **kwargs):
     r = httpx.post(f"{BASE}/{method}", json=kwargs, timeout=30)
     return r.json()
 
-def send(chat_id, text, reply_markup=None):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
+def send(chat_id, text):
     for chunk in [text[i:i+4000] for i in range(0, len(text), 4000)]:
-        payload["text"] = chunk
-        tg("sendMessage", **payload)
+        tg("sendMessage", chat_id=chat_id, text=chunk, parse_mode="HTML")
 
 def send_buttons(chat_id, text, buttons):
     keyboard = {"inline_keyboard": [[{"text": b["text"], "callback_data": b["data"]}] for b in buttons]}
+    tg("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard)
+
+def send_grid_buttons(chat_id, text, buttons, cols=2):
+    rows = [buttons[i:i+cols] for i in range(0, len(buttons), cols)]
+    keyboard = {"inline_keyboard": [[{"text": b["text"], "callback_data": b["data"]} for b in row] for row in rows]}
     tg("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=keyboard)
 
 def notify_managers(text):
@@ -52,25 +54,81 @@ def apps(action, payload={}):
         return {"success": False, "error": str(e)}
 
 def make_claim_id():
-    import uuid as _u
     ts = datetime.now().strftime('%Y%m%d-%H%M%S')
-    return f"CLM-{ts}-{_u.uuid4().hex[:4].upper()}"
+    return f"CLM-{ts}-{uuid.uuid4().hex[:4].upper()}"
 
 def get_tg_name(user):
     return (f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("username","Unknown"))
+
+def parse_date(text):
+    """Parse natural language date into YYYY-MM-DD. Returns None if not understood."""
+    text = text.lower().strip()
+    today = date.today()
+    if "today" in text: return today.strftime('%Y-%m-%d')
+    if "yesterday" in text: return (today - timedelta(days=1)).strftime('%Y-%m-%d')
+    # Try DD/MM/YYYY or DD-MM-YYYY
+    m = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', text)
+    if m:
+        d2,mo,yr = int(m.group(1)),int(m.group(2)),int(m.group(3))
+        if yr < 100: yr += 2000
+        try: return date(yr, mo, d2).strftime('%Y-%m-%d')
+        except: pass
+    # Try DD Month or Month DD (with optional year)
+    m = re.search(r'(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?', text)
+    if m:
+        day = int(m.group(1))
+        mon_str = m.group(2)[:3]
+        yr2 = int(m.group(3)) if m.group(3) else today.year
+        mon = MONTHS.get(mon_str) or MONTHS.get(m.group(2).lower())
+        if mon:
+            try: return date(yr2, mon, day).strftime('%Y-%m-%d')
+            except: pass
+    m = re.search(r'([a-z]+)\s+(\d{1,2})(?:\s+(\d{4}))?', text)
+    if m:
+        mon_str = m.group(1)[:3]
+        day = int(m.group(2))
+        yr2 = int(m.group(3)) if m.group(3) else today.year
+        mon = MONTHS.get(mon_str) or MONTHS.get(m.group(1).lower())
+        if mon:
+            try: return date(yr2, mon, day).strftime('%Y-%m-%d')
+            except: pass
+    # Just a number like "26" — assume current month
+    m = re.fullmatch(r'(\d{1,2})', text.strip())
+    if m:
+        day = int(m.group(1))
+        try: return date(today.year, today.month, day).strftime('%Y-%m-%d')
+        except: pass
+    return None
+
+def show_receipt_summary(chat_id, data, prompt="Is this correct? Select department or edit any field:"):
+    amount = float(data.get("amount", 0))
+    msg = (
+        f"✅ <b>Receipt details:</b>\n\n"
+        f"🏪 Merchant: <b>{data.get('merchant','?')}</b>\n"
+        f"💰 Amount: <b>{CURRENCY} {amount:.2f}</b>\n"
+        f"📅 Date: <b>{data.get('date','?')}</b>\n"
+        f"🏷 Category: <b>{data.get('category','?')}</b>\n"
+        f"📝 Description: {data.get('description','?')}\n\n"
+        f"{prompt}"
+    )
+    buttons = [{"text": d, "data": f"dept:{d}"} for d in DEPARTMENTS]
+    buttons.append({"text": "✏️ Edit date", "data": "edit:date"})
+    buttons.append({"text": "✏️ Edit amount", "data": "edit:amount"})
+    buttons.append({"text": "✏️ Edit merchant", "data": "edit:merchant"})
+    buttons.append({"text": "✏️ Edit category", "data": "edit:category"})
+    buttons.append({"text": "✏️ Edit description", "data": "edit:description"})
+    send_grid_buttons(chat_id, msg, buttons, cols=2)
 
 def scan_receipt_image(file_id):
     try:
         r = tg("getFile", file_id=file_id)
         file_path = r["result"]["file_path"]
-        file_url  = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
-        img_resp  = httpx.get(file_url, timeout=30)
-        img_b64   = base64.b64encode(img_resp.content).decode("utf-8")
+        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_path}"
+        img_resp = httpx.get(file_url, timeout=30)
+        img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
         mime = "image/png" if file_path.lower().endswith(".png") else "image/jpeg"
         today = datetime.now().strftime('%Y-%m-%d')
-        prompt = f"""Analyse this Malaysian receipt image. Return ONLY a JSON object with these exact keys:
-{{"merchant": "name", "amount": 0.00, "currency": "MYR", "date": "YYYY-MM-DD", "category": "Meals|Transport|Accommodation|Office Supplies|Travel|Entertainment|Utilities|Others", "description": "brief description", "items": "items list"}}
-Rules: amount is total paid (number). Date YYYY-MM-DD (use {today} if not visible). No markdown. JSON only."""
+        prompt = f"""Analyse this Malaysian receipt. Return ONLY valid JSON with keys: merchant, amount (number), currency (MYR), date (YYYY-MM-DD, use {today} if unclear), category (one of: Meals/Transport/Accommodation/Office Supplies/Travel/Entertainment/Utilities/Others), description, items. No markdown."""
         resp = groq_client.chat.completions.create(
             model=VISION_MODEL,
             messages=[{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}, {"type": "text", "text": prompt}]}],
@@ -78,48 +136,42 @@ Rules: amount is total paid (number). Date YYYY-MM-DD (use {today} if not visibl
         )
         raw = resp.choices[0].message.content.strip().replace("```json","").replace("```","").strip()
         return {"success": True, "data": json.loads(raw)}
-    except json.JSONDecodeError as e:
-        return {"success": False, "error": f"Could not parse receipt: {e}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def submit_claim(chat_id, user, receipt_data, department):
+def do_submit(chat_id, user):
+    rd = pending[chat_id]["receipt"]
+    dept = pending[chat_id].get("department", "Others")
     claim_id = make_claim_id()
     if claim_id in submitted_ids:
-        return False, "Duplicate blocked."
+        send(chat_id, "⚠️ Duplicate blocked. Please try again."); return
     employee_name = get_tg_name(user)
-    employee_id   = f"TG-{user.get('id','')}"
-    payload = {
-        "claimId": claim_id, "employee_name": employee_name, "employee_id": employee_id,
-        "date": receipt_data.get("date", datetime.now().strftime('%Y-%m-%d')),
-        "amount": float(receipt_data.get("amount", 0)),
-        "category": receipt_data.get("category", "Others"),
-        "merchant": receipt_data.get("merchant", "Unknown"),
-        "description": receipt_data.get("description", ""),
-        "department": department, "status": "Pending"
-    }
+    employee_id = f"TG-{user.get('id','')}"
+    payload = {"claimId": claim_id, "employee_name": employee_name, "employee_id": employee_id,
+               "date": rd.get("date", datetime.now().strftime('%Y-%m-%d')),
+               "amount": float(rd.get("amount", 0)),
+               "category": rd.get("category", "Others"),
+               "merchant": rd.get("merchant", "Unknown"),
+               "description": rd.get("description", ""),
+               "department": dept, "status": "Pending"}
     result = apps("addClaim", {"claim": payload})
     if result.get("success"):
         submitted_ids.add(claim_id)
-        notify_managers(f"New Claim! ID:{claim_id}\nBy:{employee_name}\nAmt:{CURRENCY} {float(receipt_data.get('amount',0)):.2f}\nCat:{receipt_data.get('category')} - {receipt_data.get('merchant')}\nDept:{department}")
-        return True, claim_id
-    return False, result.get("error", "Unknown error")
+        notify_managers(f"New Claim!\nID:{claim_id}\nBy:{employee_name}\nAmt:{CURRENCY} {float(rd.get('amount',0)):.2f}\nCat:{rd.get('category')} - {rd.get('merchant')}\nDept:{dept}")
+        del pending[chat_id]
+        send(chat_id, f"🎉 <b>Submitted!</b>\n• ID: <code>{claim_id}</code>\n• Amount: {CURRENCY} {float(rd.get('amount',0)):.2f}\n• Merchant: {rd.get('merchant')}\n• Date: {rd.get('date')}\n\nManager notified! Keep your receipt 📎")
+    else:
+        send(chat_id, f"❌ Submit failed: {result.get('error','Unknown')}. Please try again.")
 
-DEPARTMENTS = ["Swimming", "Admin", "Management", "Marketing", "Operations", "Others"]
-CATEGORIES  = ["Meals", "Transport", "Accommodation", "Office Supplies", "Travel", "Entertainment", "Utilities", "Others"]
-
-def handle_photo(chat_id, user, photo_list, caption=""):
+def handle_photo(chat_id, user, photo_list):
     file_id = photo_list[-1]["file_id"]
-    send(chat_id, "📸 Got your receipt! Scanning with AI... please wait ⏳")
+    send(chat_id, "📸 Scanning your receipt with AI... ⏳")
     result = scan_receipt_image(file_id)
     if not result["success"]:
-        send(chat_id, f"❌ Could not read receipt: {result['error']}\nPlease try a clearer photo or type your claim.")
+        send(chat_id, f"❌ Could not read receipt.\nError: {result['error']}\n\nPlease try a clearer photo.")
         return
-    data = result["data"]
-    pending[chat_id] = {"receipt": data, "user": user}
-    amount = float(data.get("amount", 0))
-    msg = (f"✅ <b>Receipt scanned!</b>\n\n• Merchant: <b>{data.get('merchant','?')}</b>\n• Amount: <b>{CURRENCY} {amount:.2f}</b>\n• Date: {data.get('date','?')}\n• Category: {data.get('category','?')}\n• Description: {data.get('description','?')}\n\nIs this correct? If anything is wrong, just tell me.\nOtherwise, which <b>department</b> is this for?")
-    send_buttons(chat_id, msg, [{"text": d, "data": f"dept:{d}"} for d in DEPARTMENTS])
+    pending[chat_id] = {"receipt": result["data"], "user": user}
+    show_receipt_summary(chat_id, result["data"])
 
 def handle_callback(update):
     cb = update["callback_query"]
@@ -128,63 +180,138 @@ def handle_callback(update):
     data = cb["data"]
     tg("answerCallbackQuery", callback_query_id=cb["id"])
     if data.startswith("dept:"):
-        dept = data[5:]
         if chat_id not in pending:
-            send(chat_id, "Session expired. Please send your receipt again."); return
+            send(chat_id, "⚠️ Session expired. Please send your receipt again."); return
+        dept = data[5:]
         pending[chat_id]["department"] = dept
         rd = pending[chat_id]["receipt"]
-        msg = (f"📋 <b>Confirm your claim:</b>\n\n• Merchant: {rd.get('merchant')}\n• Amount: {CURRENCY} {float(rd.get('amount',0)):.2f}\n• Date: {rd.get('date')}\n• Category: {rd.get('category')}\n• Description: {rd.get('description')}\n• Department: {dept}\n\nSubmit?")
-        send_buttons(chat_id, msg, [{"text": "✅ Yes, Submit!", "data": "confirm:yes"},{"text": "❌ Cancel", "data": "confirm:no"}])
-    elif data.startswith("confirm:"):
-        if data == "confirm:yes":
-            if chat_id not in pending:
-                send(chat_id, "Session expired. Please send your receipt again."); return
-            rd   = pending[chat_id]["receipt"]
-            dept = pending[chat_id].get("department", "Others")
-            send(chat_id, "⏳ Submitting...")
-            ok, res = submit_claim(chat_id, user, rd, dept)
-            if ok:
-                del pending[chat_id]
-                send(chat_id, f"🎉 <b>Submitted!</b>\n• Claim ID: <code>{res}</code>\n• Amount: {CURRENCY} {float(rd.get('amount',0)):.2f}\n• Merchant: {rd.get('merchant')}\n\nManager notified! Keep your receipt 📎")
-            else:
-                send(chat_id, f"❌ Failed: {res}. Try again or contact admin.")
-        else:
-            pending.pop(chat_id, None)
-            send(chat_id, "Cancelled. Send a new receipt when ready! 😊")
+        msg = (f"📋 <b>Confirm your claim:</b>\n\n"
+               f"• Merchant: {rd.get('merchant')}\n"
+               f"• Amount: {CURRENCY} {float(rd.get('amount',0)):.2f}\n"
+               f"• Date: {rd.get('date')}\n"
+               f"• Category: {rd.get('category')}\n"
+               f"• Description: {rd.get('description')}\n"
+               f"• Department: {dept}\n\nSubmit?")
+        send_buttons(chat_id, msg, [{"text": "✅ Yes, Submit!", "data": "confirm:yes"}, {"text": "✏️ Edit more", "data": "back:edit"}, {"text": "❌ Cancel", "data": "confirm:no"}])
+    elif data == "confirm:yes":
+        if chat_id not in pending:
+            send(chat_id, "⚠️ Session expired."); return
+        send(chat_id, "⏳ Submitting...")
+        do_submit(chat_id, user)
+    elif data == "confirm:no":
+        pending.pop(chat_id, None)
+        send(chat_id, "Cancelled. Send a new receipt when ready! 😊")
+    elif data == "back:edit":
+        if chat_id not in pending:
+            send(chat_id, "⚠️ Session expired."); return
+        show_receipt_summary(chat_id, pending[chat_id]["receipt"])
+    elif data.startswith("edit:"):
+        if chat_id not in pending:
+            send(chat_id, "⚠️ Session expired. Please send your receipt again."); return
+        field = data[5:]
+        pending[chat_id]["editing"] = field
+        prompts = {
+            "date": f"📅 What is the correct date?\n\nExamples: <i>26 June</i>, <i>today</i>, <i>yesterday</i>, <i>25/06/2026</i>, <i>26</i> (day of this month)",
+            "amount": f"💰 What is the correct amount? (numbers only, e.g. <i>85.50</i>)",
+            "merchant": f"🏪 What is the correct merchant/store name?",
+            "category": f"🏷 Choose the correct category: {', '.join(CATEGORIES)}",
+            "description": f"📝 What is the correct description?",
+        }
+        send(chat_id, prompts.get(field, f"Type the new value for {field}:"))
 
 def handle_text(chat_id, user, text):
-    import re
     tg_name = get_tg_name(user)
     first_name = user.get("first_name","there")
-    if chat_id in pending and pending[chat_id].get("fixing"):
-        field = pending[chat_id].pop("fixing")
-        pending[chat_id]["receipt"][field] = text
+    # --- Handle editing mode ---
+    if chat_id in pending and pending[chat_id].get("editing"):
+        field = pending[chat_id].pop("editing")
         rd = pending[chat_id]["receipt"]
-        send(chat_id, f"✅ Updated {field}! Which department is this for?")
-        send_buttons(chat_id, "Select department:", [{"text": d, "data": f"dept:{d}"} for d in DEPARTMENTS])
+        ok = True
+        if field == "date":
+            parsed = parse_date(text)
+            if parsed:
+                rd["date"] = parsed
+                send(chat_id, f"✅ Date updated to <b>{parsed}</b>")
+            else:
+                send(chat_id, f"❌ Could not understand date: <i>{text}</i>\nTry: <i>26 June</i>, <i>26/06/2026</i>, <i>today</i>, <i>yesterday</i>")
+                ok = False
+        elif field == "amount":
+            m = re.search(r'[\d]+\.?[\d]*', text.replace(',','.'))
+            if m:
+                rd["amount"] = float(m.group())
+                send(chat_id, f"✅ Amount updated to <b>{CURRENCY} {rd['amount']:.2f}</b>")
+            else:
+                send(chat_id, "❌ Please enter a valid number, e.g. <i>85.50</i>"); ok = False
+        elif field == "merchant":
+            rd["merchant"] = text.strip().title()
+            send(chat_id, f"✅ Merchant updated to <b>{rd['merchant']}</b>")
+        elif field == "category":
+            matched = next((c for c in CATEGORIES if c.lower() in text.lower()), None)
+            if matched:
+                rd["category"] = matched
+                send(chat_id, f"✅ Category updated to <b>{matched}</b>")
+            else:
+                send(chat_id, f"❌ Not recognised. Choose from: {', '.join(CATEGORIES)}"); ok = False
+        elif field == "description":
+            rd["description"] = text.strip()
+            send(chat_id, f"✅ Description updated.")
+        if ok:
+            pending[chat_id]["receipt"] = rd
+            show_receipt_summary(chat_id, rd, "Updated! Select department or edit more:")
+        else:
+            pending[chat_id]["editing"] = field  # re-enter edit mode
         return
+    # --- Smart text correction while pending ---
     if chat_id in pending and "receipt" in pending[chat_id]:
         lower = text.lower()
-        data  = pending[chat_id]["receipt"]
-        m = re.search(r'(?:rm|myr)?\s*(\d+\.?\d*)', lower)
-        if any(w in lower for w in ['amount','rm','myr','price','total']) and m:
-            data["amount"] = float(m.group(1))
-            send(chat_id, f"✏️ Amount updated to {CURRENCY} {data['amount']:.2f}")
-            send_buttons(chat_id, "Which department?", [{"text": d, "data": f"dept:{d}"} for d in DEPARTMENTS]); return
-        for cat in CATEGORIES:
-            if cat.lower() in lower:
-                data["category"] = cat
-                send(chat_id, f"✏️ Category updated to {cat}")
-                send_buttons(chat_id, "Which department?", [{"text": d, "data": f"dept:{d}"} for d in DEPARTMENTS]); return
+        rd = pending[chat_id]["receipt"]
+        fixed = False
+        # Date correction: "change date to 26 june" / "date is 26/06"
+        date_kw = any(w in lower for w in ['date','hari','tarikh'])
+        if date_kw or re.search(r'\b(today|yesterday|\d{1,2}[/-]\d{1,2})\b', lower):
+            # extract the date part after keywords
+            after = re.split(r'(?:date|to|is|=|:)', lower, maxsplit=1)[-1].strip()
+            parsed = parse_date(after) or parse_date(lower)
+            if parsed:
+                rd["date"] = parsed
+                fixed = True
+                send(chat_id, f"✅ Date updated to <b>{parsed}</b>")
+        # Amount correction
+        if not fixed and any(w in lower for w in ['amount','rm','myr','price','total','ringgit']):
+            m = re.search(r'[\d]+\.?[\d]*', text.replace(',','.'))
+            if m:
+                rd["amount"] = float(m.group())
+                fixed = True
+                send(chat_id, f"✅ Amount updated to <b>{CURRENCY} {rd['amount']:.2f}</b>")
+        # Merchant correction
+        if not fixed and any(w in lower for w in ['merchant','shop','store','restaurant','place','kedai']):
+            after = re.split(r'(?:merchant|shop|store|restaurant|is|to|=|:)', lower, maxsplit=1)[-1].strip()
+            if after:
+                rd["merchant"] = after.title()
+                fixed = True
+                send(chat_id, f"✅ Merchant updated to <b>{rd['merchant']}</b>")
+        # Category correction
+        if not fixed:
+            for cat in CATEGORIES:
+                if cat.lower() in lower:
+                    rd["category"] = cat
+                    fixed = True
+                    send(chat_id, f"✅ Category updated to <b>{cat}</b>")
+                    break
+        if fixed:
+            pending[chat_id]["receipt"] = rd
+            show_receipt_summary(chat_id, rd, "Updated! Select department or edit more:")
+            return
+    # --- Standard commands ---
     if text.startswith("/start"):
-        send(chat_id, f"Hi {first_name}! 👋 <b>Sailfish Claims Bot</b>\n\n📸 <b>Send a photo of your receipt</b> - I'll read it with AI!\n\nCommands:\n/status - Your claims\n/pending - Pending approvals\n/clear - Reset\n\n<b>Tip:</b> Good lighting = better scan 💡")
+        send(chat_id, f"Hi {first_name}! 👋 <b>Sailfish Claims Assistant</b>\n\n📸 <b>Send a photo of your receipt</b> - I'll read it with AI automatically!\n\nAfter scanning, you can edit any detail (date, amount, merchant, category) before submitting.\n\nCommands:\n/status - Your recent claims\n/pending - Pending approvals (managers)\n/clear - Reset")
     elif text.startswith("/status"):
         result = apps("getClaims", {})
         claims = result.get("claims", [])
         mine = [c for c in claims if tg_name.lower() in c.get("employeeName","").lower()]
+        STATUS_MAP = {"Pending":"⏳","Approved":"✅","Rejected":"❌"}
         if mine:
-            msg = "📋 <b>Your claims:</b>\n\n"
-            STATUS_MAP = {"Pending":"\u23f3","Approved":"\u2705","Rejected":"\u274c"}
+            msg = "📋 <b>Your recent claims:</b>\n\n"
             for c in mine[-5:]:
                 em = STATUS_MAP.get(c.get('status',''),'?')
                 msg += f"{em} {c.get('claimId','?')} - {CURRENCY} {float(c.get('amount',0)):.2f} - {c.get('status')}\n"
@@ -195,7 +322,7 @@ def handle_text(chat_id, user, text):
         plist = [c for c in result.get("claims",[]) if c.get("status","").lower()=="pending"]
         if plist:
             msg = f"⏳ <b>{len(plist)} pending:</b>\n\n" + "\n".join(f"• {c.get('claimId','?')} - {c.get('employeeName','?')} - {CURRENCY}{float(c.get('amount',0)):.2f}" for c in plist[:10])
-            msg += "\n\n/approve CLM-XXX or /reject CLM-XXX reason"
+            msg += "\n\n/approve CLM-XXXX or /reject CLM-XXXX reason"
             send(chat_id, msg)
         else: send(chat_id, "✅ No pending claims!")
     elif text.startswith("/approve"):
@@ -213,10 +340,10 @@ def handle_text(chat_id, user, text):
             if r.get("success"): notify_managers(f"❌ {parts[1].upper()} REJECTED by {tg_name}. Reason: {parts[2]}")
         else: send(chat_id, "Usage: /reject CLM-XXXX reason")
     elif text.startswith("/clear"):
-        sessions.pop(chat_id,None); pending.pop(chat_id,None)
+        pending.pop(chat_id, None)
         send(chat_id, "✨ Cleared! Send a receipt photo to start.")
     else:
-        send(chat_id, f"📸 Send a <b>photo of your receipt</b> and I'll read it automatically!\n\nOr type /start to see all commands.")
+        send(chat_id, "📸 Send a <b>photo of your receipt</b> and I'll read it automatically!\n\nOr type /start to see all commands.")
 
 def handle(update):
     try:
@@ -225,13 +352,13 @@ def handle(update):
         if not msg: return
         chat_id = msg["chat"]["id"]
         user = msg.get("from",{})
-        if "photo" in msg: handle_photo(chat_id, user, msg["photo"], msg.get("caption",""))
+        if "photo" in msg: handle_photo(chat_id, user, msg["photo"])
         elif "text" in msg: handle_text(chat_id, user, msg["text"])
         else: send(chat_id, "Please send a photo of your receipt.")
     except Exception as e: log.error("Handle error: %s", e, exc_info=True)
 
 def main():
-    log.info("Sailfish Claims Bot v3 - AI Receipt Scanning")
+    log.info("Sailfish Claims Bot v4 - Smart date/field editing")
     offset = 0
     while True:
         try:
