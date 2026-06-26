@@ -61,19 +61,16 @@ def get_tg_name(user):
     return (f"{user.get('first_name','')} {user.get('last_name','')}".strip() or user.get("username","Unknown"))
 
 def parse_date(text):
-    """Parse natural language date into YYYY-MM-DD. Returns None if not understood."""
     text = text.lower().strip()
     today = date.today()
     if "today" in text: return today.strftime('%Y-%m-%d')
     if "yesterday" in text: return (today - timedelta(days=1)).strftime('%Y-%m-%d')
-    # Try DD/MM/YYYY or DD-MM-YYYY
     m = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', text)
     if m:
         d2,mo,yr = int(m.group(1)),int(m.group(2)),int(m.group(3))
         if yr < 100: yr += 2000
         try: return date(yr, mo, d2).strftime('%Y-%m-%d')
         except: pass
-    # Try DD Month or Month DD (with optional year)
     m = re.search(r'(\d{1,2})\s+([a-z]+)(?:\s+(\d{4}))?', text)
     if m:
         day = int(m.group(1))
@@ -92,7 +89,6 @@ def parse_date(text):
         if mon:
             try: return date(yr2, mon, day).strftime('%Y-%m-%d')
             except: pass
-    # Just a number like "26" — assume current month
     m = re.fullmatch(r'(\d{1,2})', text.strip())
     if m:
         day = int(m.group(1))
@@ -118,7 +114,6 @@ def show_receipt_summary(chat_id, data, prompt="Is this correct? Select departme
     buttons.append({"text": "✏️ Edit category", "data": "edit:category"})
     buttons.append({"text": "✏️ Edit description", "data": "edit:description"})
     send_grid_buttons(chat_id, msg, buttons, cols=2)
-
 def scan_receipt_image(file_id):
     try:
         r = tg("getFile", file_id=file_id)
@@ -185,8 +180,10 @@ def handle_callback(update):
         dept = data[5:]
         pending[chat_id]["department"] = dept
         rd = pending[chat_id]["receipt"]
-        tg_n = get_tg_name(user)
-        emp_i = f"TG-{user.get('id','')}"
+        # Always use stored user from when photo was sent
+        stored_user = pending[chat_id].get("user", user)
+        tg_n = get_tg_name(stored_user)
+        emp_i = f"TG-{stored_user.get('id','')}"
         msg = (f"📋 <b>Confirm your claim:</b>\n\n"
                f"👤 Employee: <b>{tg_n}</b>\n"
                f"🆔 ID: {emp_i}\n"
@@ -201,7 +198,8 @@ def handle_callback(update):
         if chat_id not in pending:
             send(chat_id, "⚠️ Session expired."); return
         send(chat_id, "⏳ Submitting...")
-        do_submit(chat_id, user)
+        stored_user = pending[chat_id].get("user", user)
+        do_submit(chat_id, stored_user)
     elif data == "confirm:no":
         pending.pop(chat_id, None)
         send(chat_id, "Cancelled. Send a new receipt when ready! 😊")
@@ -226,7 +224,6 @@ def handle_callback(update):
 def handle_text(chat_id, user, text):
     tg_name = get_tg_name(user)
     first_name = user.get("first_name","there")
-    # --- Handle editing mode ---
     if chat_id in pending and pending[chat_id].get("editing"):
         field = pending[chat_id].pop("editing")
         rd = pending[chat_id]["receipt"]
@@ -263,38 +260,32 @@ def handle_text(chat_id, user, text):
             pending[chat_id]["receipt"] = rd
             show_receipt_summary(chat_id, rd, "Updated! Select department or edit more:")
         else:
-            pending[chat_id]["editing"] = field  # re-enter edit mode
+            pending[chat_id]["editing"] = field
         return
-    # --- Smart text correction while pending ---
     if chat_id in pending and "receipt" in pending[chat_id]:
         lower = text.lower()
         rd = pending[chat_id]["receipt"]
         fixed = False
-        # Date correction: "change date to 26 june" / "date is 26/06"
         date_kw = any(w in lower for w in ['date','hari','tarikh'])
         if date_kw or re.search(r'\b(today|yesterday|\d{1,2}[/-]\d{1,2})\b', lower):
-            # extract the date part after keywords
             after = re.split(r'(?:date|to|is|=|:)', lower, maxsplit=1)[-1].strip()
             parsed = parse_date(after) or parse_date(lower)
             if parsed:
                 rd["date"] = parsed
                 fixed = True
                 send(chat_id, f"✅ Date updated to <b>{parsed}</b>")
-        # Amount correction
         if not fixed and any(w in lower for w in ['amount','rm','myr','price','total','ringgit']):
             m = re.search(r'[\d]+\.?[\d]*', text.replace(',','.'))
             if m:
                 rd["amount"] = float(m.group())
                 fixed = True
                 send(chat_id, f"✅ Amount updated to <b>{CURRENCY} {rd['amount']:.2f}</b>")
-        # Merchant correction
         if not fixed and any(w in lower for w in ['merchant','shop','store','restaurant','place','kedai']):
             after = re.split(r'(?:merchant|shop|store|restaurant|is|to|=|:)', lower, maxsplit=1)[-1].strip()
             if after:
                 rd["merchant"] = after.title()
                 fixed = True
                 send(chat_id, f"✅ Merchant updated to <b>{rd['merchant']}</b>")
-        # Category correction
         if not fixed:
             for cat in CATEGORIES:
                 if cat.lower() in lower:
@@ -306,9 +297,8 @@ def handle_text(chat_id, user, text):
             pending[chat_id]["receipt"] = rd
             show_receipt_summary(chat_id, rd, "Updated! Select department or edit more:")
             return
-    # --- Standard commands ---
     if text.startswith("/start"):
-        send(chat_id, f"Hi {first_name}! 👋 <b>Sailfish Claims Assistant</b>\n\n📸 <b>Send a photo of your receipt</b> - I'll read it with AI automatically!\n\nAfter scanning, you can edit any detail (date, amount, merchant, category) before submitting.\n\nCommands:\n/status - Your recent claims\n/pending - Pending approvals (managers)\n/clear - Reset")
+        send(chat_id, f"Hi {first_name}! 👋 <b>Sailfish Claims Assistant</b>\n\n📸 <b>Send a photo of your receipt</b> - I'll read it with AI!\n\nAfter scanning, edit any detail before submitting.\n\nCommands:\n/status - Your recent claims\n/pending - Pending approvals\n/clear - Reset")
     elif text.startswith("/status"):
         result = apps("getClaims", {})
         claims = result.get("claims", [])
@@ -362,7 +352,7 @@ def handle(update):
     except Exception as e: log.error("Handle error: %s", e, exc_info=True)
 
 def main():
-    log.info("Sailfish Claims Bot v4 - Smart date/field editing")
+    log.info("Sailfish Claims Bot v4 - fixed user from pending")
     offset = 0
     while True:
         try:
