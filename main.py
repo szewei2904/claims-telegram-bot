@@ -153,7 +153,22 @@ def do_submit(chat_id, user):
     if result.get("success"):
         submitted_ids.add(claim_id)
         notify_managers(f"New Claim!\nID:{claim_id}\nBy:{employee_name}\nAmt:{CURRENCY} {float(rd.get('amount',0)):.2f}\nCat:{rd.get('category')} - {rd.get('merchant')}\nDept:{dept}")
+        # Upload receipt image to Google Drive
+        file_id = pending[chat_id].get("file_id")
         del pending[chat_id]
+        if file_id:
+            try:
+                r2 = tg("getFile", file_id=file_id)
+                file_path2 = r2["result"]["file_path"]
+                file_url2 = f"https://api.telegram.org/file/bot{TOKEN}/{file_path2}"
+                img_resp2 = httpx.get(file_url2, timeout=30)
+                img_b64_2 = base64.b64encode(img_resp2.content).decode("utf-8")
+                ext2 = "png" if file_path2.lower().endswith(".png") else "jpg"
+                safe_name2 = employee_name.replace(" ", "_")
+                filename2 = f"{claim_id}-{safe_name2}.{ext2}"
+                apps("uploadReceipt", {"claimId": claim_id, "filename": filename2, "imageBase64": img_b64_2, "mimeType": f"image/{ext2}"})
+            except Exception as drive_err:
+                log.error("Drive upload error: %s", drive_err)
         send(chat_id, f"🎉 <b>Submitted!</b>\n• ID: <code>{claim_id}</code>\n• Amount: {CURRENCY} {float(rd.get('amount',0)):.2f}\n• Merchant: {rd.get('merchant')}\n• Date: {rd.get('date')}\n\nManager notified! Keep your receipt 📎")
     else:
         send(chat_id, f"❌ Submit failed: {result.get('error','Unknown')}. Please try again.")
@@ -165,7 +180,7 @@ def handle_photo(chat_id, user, photo_list):
     if not result["success"]:
         send(chat_id, f"❌ Could not read receipt.\nError: {result['error']}\n\nPlease try a clearer photo.")
         return
-    pending[chat_id] = {"receipt": result["data"], "user": user}
+    pending[chat_id] = {"receipt": result["data"], "user": user, "file_id": file_id}
     show_receipt_summary(chat_id, result["data"])
 
 def handle_callback(update):
