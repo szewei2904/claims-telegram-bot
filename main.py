@@ -185,13 +185,17 @@ def handle_callback(update):
         dept = data[5:]
         pending[chat_id]["department"] = dept
         rd = pending[chat_id]["receipt"]
+        tg_n = get_tg_name(user)
+        emp_i = f"TG-{user.get('id','')}"
         msg = (f"📋 <b>Confirm your claim:</b>\n\n"
-               f"• Merchant: {rd.get('merchant')}\n"
-               f"• Amount: {CURRENCY} {float(rd.get('amount',0)):.2f}\n"
-               f"• Date: {rd.get('date')}\n"
-               f"• Category: {rd.get('category')}\n"
-               f"• Description: {rd.get('description')}\n"
-               f"• Department: {dept}\n\nSubmit?")
+               f"👤 Employee: <b>{tg_n}</b>\n"
+               f"🆔 ID: {emp_i}\n"
+               f"🏪 Merchant: {rd.get('merchant')}\n"
+               f"💰 Amount: <b>{CURRENCY} {float(rd.get('amount',0)):.2f}</b>\n"
+               f"📅 Date: {rd.get('date')}\n"
+               f"🏷 Category: {rd.get('category')}\n"
+               f"📝 Description: {rd.get('description')}\n"
+               f"🏢 Department: {dept}\n\nAll correct? Tap Submit!")
         send_buttons(chat_id, msg, [{"text": "✅ Yes, Submit!", "data": "confirm:yes"}, {"text": "✏️ Edit more", "data": "back:edit"}, {"text": "❌ Cancel", "data": "confirm:no"}])
     elif data == "confirm:yes":
         if chat_id not in pending:
