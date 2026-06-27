@@ -6,7 +6,7 @@ import httpx
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-log = logging.getLogger(__name__)
+log = logging.getLogger(__name__)h
 
 TOKEN         = os.getenv("TELEGRAM_TOKEN") or os.getenv("BOT_TOKEN")
 GROQ_API_KEY  = os.getenv("GROQ_API_KEY")
@@ -166,7 +166,11 @@ def do_submit(chat_id, user):
                 ext2 = "png" if file_path2.lower().endswith(".png") else "jpg"
                 safe_name2 = employee_name.replace(" ", "_")
                 filename2 = f"{claim_id}-{safe_name2}.{ext2}"
-                upload_payload = {"action": "uploadReceipt", "claimId": claim_id, "filename": filename2, "imageBase64": img_b64_2, "mimeType": f"image/{ext2}"}                 import urllib.parse as _ul                 _body = "payload=" + _ul.quote(json.dumps(upload_payload))                 _r3 = httpx.post(APPS_SCRIPT_URL, content=_body.encode(), headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=60, follow_redirects=True)                 log.info("uploadReceipt result: %s", _r3.text[:200])
+                                import urllib.parse as _ul
+                                upload_payload = {"action": "uploadReceipt", "claimId": claim_id, "filename": filename2, "imageBase64": img_b64_2, "mimeType": f"image/{ext2}"}
+                                _body = "payload=" + _ul.quote(json.dumps(upload_payload))
+                                _r3 = httpx.post(APPS_SCRIPT_URL, content=_body.encode(), headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=60, follow_redirects=True)
+                                log.info("uploadReceipt result: %s", _r3.text[:200])
             except Exception as drive_err:
                 log.error("Drive upload error: %s", drive_err)
         send(chat_id, f"🎉 <b>Submitted!</b>\n• ID: <code>{claim_id}</code>\n• Amount: {CURRENCY} {float(rd.get('amount',0)):.2f}\n• Merchant: {rd.get('merchant')}\n• Date: {rd.get('date')}\n\nManager notified! Keep your receipt 📎")
