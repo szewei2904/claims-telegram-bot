@@ -20,7 +20,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 pending = {}
 submitted_ids = set()
 
-DEPARTMENTS = ["Swimming", "Admin", "Management", "Marketing", "Operations", "Others"]
+DEPARTMENTS = ["Management HQ", "Bukit Kota Kemuning", "TGCR", "YTSA", "TARH", "Bukit Jalil Berjaya", "Lakepoint Club", "360Club", "Setia Alam Club", "Canopy Club", "Sri KDU Subang", "Sri KDU Klang", "Sri KDU Kota Damansara"]
 CATEGORIES  = ["Meals", "Transport", "Accommodation", "Office Supplies", "Travel", "Entertainment", "Utilities", "Others"]
 MONTHS = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,"january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
 
