@@ -98,12 +98,14 @@ def parse_date(text):
 
 def show_receipt_summary(chat_id, data, prompt="Is this correct? Select department or edit any field:"):
     amount = float(data.get("amount", 0))
+    inv = data.get("invoice_number","") or "--"
     msg = (
         f"✅ <b>Receipt details:</b>\n\n"
         f"🏪 Merchant: <b>{data.get('merchant','?')}</b>\n"
         f"💰 Amount: <b>{CURRENCY} {amount:.2f}</b>\n"
         f"📅 Date: <b>{data.get('date','?')}</b>\n"
         f"🏷 Category: <b>{data.get('category','?')}</b>\n"
+        f"🧾 Invoice No.: <b>{inv}</b>\n"
         f"📝 Description: {data.get('description','?')}\n\n"
         f"{prompt}"
     )
@@ -113,6 +115,7 @@ def show_receipt_summary(chat_id, data, prompt="Is this correct? Select departme
     buttons.append({"text": "✏️ Edit merchant", "data": "edit:merchant"})
     buttons.append({"text": "✏️ Edit category", "data": "edit:category"})
     buttons.append({"text": "✏️ Edit description", "data": "edit:description"})
+    buttons.append({"text": "✏️ Edit invoice no.", "data": "edit:invoice_number"})
     send_grid_buttons(chat_id, msg, buttons, cols=2)
 def scan_receipt_image(file_id):
     try:
@@ -123,7 +126,7 @@ def scan_receipt_image(file_id):
         img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
         mime = "image/png" if file_path.lower().endswith(".png") else "image/jpeg"
         today = datetime.now().strftime('%Y-%m-%d')
-        prompt = f"""Analyse this Malaysian receipt. Return ONLY valid JSON with keys: merchant, amount (number), currency (MYR), date (YYYY-MM-DD, use {today} if unclear), category (one of: Meals/Transport/Accommodation/Office Supplies/Travel/Entertainment/Utilities/Others), description, items. No markdown."""
+        prompt = f"""Analyse this Malaysian receipt. Return ONLY valid JSON with these exact keys: merchant, amount (number), currency (MYR), date (YYYY-MM-DD, use {today} if unclear), category (one of: Meals/Transport/Accommodation/Office Supplies/Travel/Entertainment/Utilities/Others), description, invoice_number (the receipt/invoice number printed on the receipt, or empty string if not found), items. No markdown, no extra text."""
         resp = groq_client.chat.completions.create(
             model=VISION_MODEL,
             messages=[{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}, {"type": "text", "text": prompt}]}],
@@ -148,6 +151,7 @@ def do_submit(chat_id, user):
                "category": rd.get("category", "Others"),
                "merchant": rd.get("merchant", "Unknown"),
                "description": rd.get("description", ""),
+               "invoice_number": rd.get("invoice_number", ""),
                "department": dept, "status": "Pending"}
     result = apps("addClaim", {"claim": payload})
     if result.get("success"):
@@ -237,6 +241,7 @@ def handle_callback(update):
             "merchant": f"🏪 What is the correct merchant/store name?",
             "category": f"🏷 Choose the correct category: {', '.join(CATEGORIES)}",
             "description": f"📝 What is the correct description?",
+            "invoice_number": f"🧾 What is the invoice/receipt number on the receipt? (or type <i>none</i> if not available)",
         }
         send(chat_id, prompts.get(field, f"Type the new value for {field}:"))
 
@@ -275,6 +280,10 @@ def handle_text(chat_id, user, text):
         elif field == "description":
             rd["description"] = text.strip()
             send(chat_id, f"✅ Description updated.")
+        elif field == "invoice_number":
+            val = "" if text.strip().lower() in ["none","nil","-","--","na","n/a"] else text.strip()
+            rd["invoice_number"] = val
+            send(chat_id, f"✅ Invoice number updated to <b>{val or '--'}</b>")
         if ok:
             pending[chat_id]["receipt"] = rd
             show_receipt_summary(chat_id, rd, "Updated! Select department or edit more:")
