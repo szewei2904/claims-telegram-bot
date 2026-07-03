@@ -217,6 +217,7 @@ def handle_callback(update):
         stored_user = pending[chat_id].get("user", user)
         tg_n = get_tg_name(stored_user)
         emp_i = f"TG-{stored_user.get('id','')}"
+        inv = rd.get('invoice_number','') or '--'
         msg = (f"📋 <b>Confirm your claim:</b>\n\n"
                f"👤 Employee: <b>{tg_n}</b>\n"
                f"🆔 ID: {emp_i}\n"
@@ -224,6 +225,7 @@ def handle_callback(update):
                f"💰 Amount: <b>{CURRENCY} {float(rd.get('amount',0)):.2f}</b>\n"
                f"📅 Date: {rd.get('date')}\n"
                f"🏷 Category: {rd.get('category')}\n"
+               f"🧾 Invoice No.: <b>{inv}</b>\n"
                f"📝 Description: {rd.get('description')}\n"
                f"🏢 Department: {dept}\n\nAll correct? Tap Submit!")
         send_buttons(chat_id, msg, [{"text": "✅ Yes, Submit!", "data": "confirm:yes"}, {"text": "✏️ Edit more", "data": "back:edit"}, {"text": "❌ Cancel", "data": "confirm:no"}])
