@@ -99,6 +99,7 @@ def parse_date(text):
 def show_receipt_summary(chat_id, data, prompt="Is this correct? Select department or edit any field:"):
     amount = float(data.get("amount", 0))
     inv = data.get("invoice_number","") or "--"
+    rcpt = data.get("receipt_number","") or "--"
     msg = (
         f"✅ <b>Receipt details:</b>\n\n"
         f"🏪 Merchant: <b>{data.get('merchant','?')}</b>\n"
@@ -106,6 +107,7 @@ def show_receipt_summary(chat_id, data, prompt="Is this correct? Select departme
         f"📅 Date: <b>{data.get('date','?')}</b>\n"
         f"🏷 Category: <b>{data.get('category','?')}</b>\n"
         f"🧾 Invoice No.: <b>{inv}</b>\n"
+        f"📄 Receipt No.: <b>{rcpt}</b>\n"
         f"📝 Description: {data.get('description','?')}\n\n"
         f"{prompt}"
     )
@@ -116,6 +118,7 @@ def show_receipt_summary(chat_id, data, prompt="Is this correct? Select departme
     buttons.append({"text": "✏️ Edit category", "data": "edit:category"})
     buttons.append({"text": "✏️ Edit description", "data": "edit:description"})
     buttons.append({"text": "✏️ Edit invoice no.", "data": "edit:invoice_number"})
+    buttons.append({"text": "✏️ Edit receipt no.", "data": "edit:receipt_number"})
     send_grid_buttons(chat_id, msg, buttons, cols=2)
 def scan_receipt_image(file_id):
     try:
@@ -133,7 +136,8 @@ def scan_receipt_image(file_id):
 - date: YYYY-MM-DD format (use {today} if unclear)
 - category: one of Meals/Transport/Accommodation/Office Supplies/Travel/Entertainment/Utilities/Others
 - description: brief description of purchase
-- invoice_number: Look VERY carefully for any of these labels on the receipt: "Invoice No", "Invoice #", "Receipt No", "Receipt #", "Bill No", "Trans No", "Transaction No", "Tax Invoice No", "Ref No", "No. Resit", "No. Invois", "Doc No", "Order No", "GT No", "SI No". Return the exact number/code shown next to that label. Only return empty string "" if you truly cannot find any such number. Do NOT invent or guess numbers.
+- invoice_number: Look VERY carefully for the INVOICE number labeled as "Invoice No", "Invoice #", "Tax Invoice No", "No. Invois", "SI No". Return exact code. Return empty string "" if not found. Do NOT invent.
+- receipt_number: Look VERY carefully for the RECEIPT/TRANSACTION number labeled as "Receipt No", "Receipt #", "Trans No", "Transaction No", "No. Resit", "Ref No", "Bill No", "Order No", "GT No", "Doc No". This is often DIFFERENT from invoice_number. Return exact code. Return empty string "" if not found. Do NOT invent.
 - items: array of items purchased
 
 Return ONLY the JSON, no markdown, no extra text."""
@@ -162,6 +166,7 @@ def do_submit(chat_id, user):
                "merchant": rd.get("merchant", "Unknown"),
                "description": rd.get("description", ""),
                "invoice_number": rd.get("invoice_number", ""),
+               "receipt_number": rd.get("receipt_number", ""),
                "department": dept, "status": "Pending"}
     result = apps("addClaim", {"claim": payload})
     if result.get("success"):
@@ -218,6 +223,7 @@ def handle_callback(update):
         tg_n = get_tg_name(stored_user)
         emp_i = f"TG-{stored_user.get('id','')}"
         inv = rd.get('invoice_number','') or '--'
+        rcpt = rd.get('receipt_number','') or '--'
         msg = (f"📋 <b>Confirm your claim:</b>\n\n"
                f"👤 Employee: <b>{tg_n}</b>\n"
                f"🆔 ID: {emp_i}\n"
@@ -226,6 +232,7 @@ def handle_callback(update):
                f"📅 Date: {rd.get('date')}\n"
                f"🏷 Category: {rd.get('category')}\n"
                f"🧾 Invoice No.: <b>{inv}</b>\n"
+               f"📄 Receipt No.: <b>{rcpt}</b>\n"
                f"📝 Description: {rd.get('description')}\n"
                f"🏢 Department: {dept}\n\nAll correct? Tap Submit!")
         send_buttons(chat_id, msg, [{"text": "✅ Yes, Submit!", "data": "confirm:yes"}, {"text": "✏️ Edit more", "data": "back:edit"}, {"text": "❌ Cancel", "data": "confirm:no"}])
@@ -253,7 +260,8 @@ def handle_callback(update):
             "merchant": f"🏪 What is the correct merchant/store name?",
             "category": f"🏷 Choose the correct category: {', '.join(CATEGORIES)}",
             "description": f"📝 What is the correct description?",
-            "invoice_number": f"🧾 What is the invoice/receipt number on the receipt? (or type <i>none</i> if not available)",
+            "invoice_number": f"🧾 What is the invoice number? (or type <i>none</i> if not available)",
+            "receipt_number": f"📄 What is the receipt/transaction number printed on the receipt? (or type <i>none</i> if not available)",
         }
         send(chat_id, prompts.get(field, f"Type the new value for {field}:"))
 
@@ -296,6 +304,10 @@ def handle_text(chat_id, user, text):
             val = "" if text.strip().lower() in ["none","nil","-","--","na","n/a"] else text.strip()
             rd["invoice_number"] = val
             send(chat_id, f"✅ Invoice number updated to <b>{val or '--'}</b>")
+        elif field == "receipt_number":
+            val = "" if text.strip().lower() in ["none","nil","-","--","na","n/a"] else text.strip()
+            rd["receipt_number"] = val
+            send(chat_id, f"✅ Receipt number updated to <b>{val or '--'}</b>")
         if ok:
             pending[chat_id]["receipt"] = rd
             show_receipt_summary(chat_id, rd, "Updated! Select department or edit more:")
