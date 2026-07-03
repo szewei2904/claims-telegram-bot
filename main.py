@@ -126,7 +126,17 @@ def scan_receipt_image(file_id):
         img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
         mime = "image/png" if file_path.lower().endswith(".png") else "image/jpeg"
         today = datetime.now().strftime('%Y-%m-%d')
-        prompt = f"""Analyse this Malaysian receipt. Return ONLY valid JSON with these exact keys: merchant, amount (number), currency (MYR), date (YYYY-MM-DD, use {today} if unclear), category (one of: Meals/Transport/Accommodation/Office Supplies/Travel/Entertainment/Utilities/Others), description, invoice_number (the receipt/invoice number printed on the receipt, or empty string if not found), items. No markdown, no extra text."""
+        prompt = f"""Analyse this Malaysian receipt image carefully. Return ONLY valid JSON with these exact keys:
+- merchant: the store/business name
+- amount: total amount as a number
+- currency: "MYR"
+- date: YYYY-MM-DD format (use {today} if unclear)
+- category: one of Meals/Transport/Accommodation/Office Supplies/Travel/Entertainment/Utilities/Others
+- description: brief description of purchase
+- invoice_number: Look VERY carefully for any of these labels on the receipt: "Invoice No", "Invoice #", "Receipt No", "Receipt #", "Bill No", "Trans No", "Transaction No", "Tax Invoice No", "Ref No", "No. Resit", "No. Invois", "Doc No", "Order No", "GT No", "SI No". Return the exact number/code shown next to that label. Only return empty string "" if you truly cannot find any such number. Do NOT invent or guess numbers.
+- items: array of items purchased
+
+Return ONLY the JSON, no markdown, no extra text."""
         resp = groq_client.chat.completions.create(
             model=VISION_MODEL,
             messages=[{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}, {"type": "text", "text": prompt}]}],
