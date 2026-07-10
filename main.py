@@ -21,7 +21,13 @@ pending = {}
 submitted_ids = set()
 
 DEPARTMENTS = ["Management HQ", "Bukit Kota Kemuning", "TGCR", "YTSA", "TARH", "Bukit Jalil Berjaya", "Lakepoint Club", "360Club", "Setia Alam Club", "Canopy Club", "Sri KDU Subang", "Sri KDU Klang", "Sri KDU Kota Damansara"]
-CATEGORIES  = ["Meals", "Transport", "Accommodation", "Office Supplies", "Travel", "Entertainment", "Utilities", "Others"]
+CATEGORIES  = [
+    "Meals", "Transport", "Accommodation", "Office Supplies",
+    "Outstation Travel", "Entertainment", "Utilities",
+    "Advertisement", "Upkeep of Premises", "Rental of Pools",
+    "Gifts and Donations", "Upkeep for Computer", "Professional Fees",
+    "Others"
+]
 MONTHS = {"jan":1,"feb":2,"mar":3,"apr":4,"may":5,"jun":6,"jul":7,"aug":8,"sep":9,"oct":10,"nov":11,"dec":12,"january":1,"february":2,"march":3,"april":4,"june":6,"july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
 
 def tg(method, **kwargs):
@@ -134,7 +140,7 @@ def scan_receipt_image(file_id):
 - amount: total amount as a number
 - currency: "MYR"
 - date: YYYY-MM-DD format (use {today} if unclear)
-- category: one of Meals/Transport/Accommodation/Office Supplies/Travel/Entertainment/Utilities/Others
+- category: one of Meals/Transport/Accommodation/Office Supplies/Outstation Travel/Entertainment/Utilities/Advertisement/Upkeep of Premises/Rental of Pools/Gifts and Donations/Upkeep for Computer/Professional Fees/Others
 - description: brief description of purchase
 - invoice_number: Look VERY carefully for the INVOICE number labeled as "Invoice No", "Invoice #", "Tax Invoice No", "No. Invois", "SI No". Return exact code. Return empty string "" if not found. Do NOT invent.
 - receipt_number: Look VERY carefully for the RECEIPT/TRANSACTION number labeled as "Receipt No", "Receipt #", "Trans No", "Transaction No", "No. Resit", "Ref No", "Bill No", "Order No", "GT No", "Doc No". This is often DIFFERENT from invoice_number. Return exact code. Return empty string "" if not found. Do NOT invent.
