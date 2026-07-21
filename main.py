@@ -151,7 +151,8 @@ Return ONLY the JSON, no markdown, no extra text."""
             model=VISION_MODEL,
             messages=[{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}, {"type": "text", "text": prompt}]}],
             max_tokens=1024, temperature=0.1,
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            reasoning_effort="none", reasoning_format="hidden"
         )
         raw = resp.choices[0].message.content.strip().replace("```json","").replace("```","").strip()
         return {"success": True, "data": json.loads(raw)}
