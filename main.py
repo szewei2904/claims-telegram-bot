@@ -13,7 +13,7 @@ GROQ_API_KEY  = os.getenv("GROQ_API_KEY")
 APPS_SCRIPT_URL = os.getenv("APPS_SCRIPT_URL")
 MANAGER_IDS   = [int(x) for x in os.getenv("MANAGER_CHAT_IDS","").split(",") if x.strip()]
 CURRENCY      = os.getenv("CURRENCY","MYR")
-VISION_MODEL  = "meta-llama/llama-4-scout-17b-16e-instruct"
+VISION_MODEL  = "qwen/qwen3.6-27b"
 
 BASE = f"https://api.telegram.org/bot{TOKEN}"
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -150,7 +150,8 @@ Return ONLY the JSON, no markdown, no extra text."""
         resp = groq_client.chat.completions.create(
             model=VISION_MODEL,
             messages=[{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}, {"type": "text", "text": prompt}]}],
-            max_tokens=512, temperature=0.1
+            max_tokens=1024, temperature=0.1,
+            response_format={"type": "json_object"}
         )
         raw = resp.choices[0].message.content.strip().replace("```json","").replace("```","").strip()
         return {"success": True, "data": json.loads(raw)}
