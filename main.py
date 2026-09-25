@@ -1,5 +1,5 @@
 import os, json, logging, time, uuid, base64, re
-from datetime import datetime, date, timedelta
+from datetimeh import datetime, date, timedelta
 from dotenv import load_dotenv
 from groq import Groq
 import httpx
@@ -13,7 +13,7 @@ GROQ_API_KEY  = os.getenv("GROQ_API_KEY")
 APPS_SCRIPT_URL = os.getenv("APPS_SCRIPT_URL")
 MANAGER_IDS   = [int(x) for x in os.getenv("MANAGER_CHAT_IDS","").split(",") if x.strip()]
 CURRENCY      = os.getenv("CURRENCY","MYR")
-VISION_MODEL  = "qwen/qwen3.6-27b"
+VISION_MODEL  = "qwen/qwen3.8-27b"
 
 BASE = f"https://api.telegram.org/bot{TOKEN}"
 groq_client = Groq(api_key=GROQ_API_KEY)
