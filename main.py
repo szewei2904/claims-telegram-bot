@@ -144,13 +144,12 @@ def scan_receipt_image(file_id):
 - description: brief description of purchase
 - invoice_number: Look VERY carefully for the INVOICE number labeled as "Invoice No", "Invoice #", "Tax Invoice No", "No. Invois", "SI No". Return exact code. Return empty string "" if not found. Do NOT invent.
 - receipt_number: Look VERY carefully for the RECEIPT/TRANSACTION number labeled as "Receipt No", "Receipt #", "Trans No", "Transaction No", "No. Resit", "Ref No", "Bill No", "Order No", "GT No", "Doc No". This is often DIFFERENT from invoice_number. Return exact code. Return empty string "" if not found. Do NOT invent.
-- items: array of items purchased
 
 Return ONLY the JSON, no markdown, no extra text."""
         resp = groq_client.chat.completions.create(
             model=VISION_MODEL,
             messages=[{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}, {"type": "text", "text": prompt}]}],
-            max_tokens=1024, temperature=0.1,
+            max_tokens=512, temperature=0.1,
             response_format={"type": "json_object"},
             reasoning_effort="none", reasoning_format="hidden"
         )
